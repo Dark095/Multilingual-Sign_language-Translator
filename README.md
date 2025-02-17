@@ -13,9 +13,5 @@ To install the required libraries for this project, follow these steps:
 2. Navigate to the folder containing the `requirements.txt` file.
 3. Run the following command:`pip install -r requirements.txt`
 
-Output: 
 
-
-
-https://github.com/tayademandar/Multilingual-Sign-Language-Recognizer/assets/55328883/ceefff3c-800e-4094-851c-8d070b7f5325
 
