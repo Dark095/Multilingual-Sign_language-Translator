@@ -1,149 +1,104 @@
-import cv2
-import mediapipe as mp
-import numpy as np
+'''
+install requirements.txt and then run the below command.
+
+streamlit run Multilingual_sign_language_recognizer.py
+
+
+'''
+
 import streamlit as st
-from tensorflow.keras.models import load_model
+import cv2
+from HandTrackingModule import HandDetector
+from ClassificationModule import Classifier
+import numpy as np
+import math
+import time
+from PIL import Image
 
-class HandDetector:
-    def __init__(self, mode=False, maxHands=2, detectionCon=0.5, trackCon=0.5):
-        self.mode = mode
-        self.maxHands = maxHands
-        self.detectionCon = detectionCon
-        self.trackCon = trackCon
+# Initialize variables
+cap = cv2.VideoCapture(0)  # Camera ID == 0
+detector1 = HandDetector(maxHands=1)
+detector2 = HandDetector(maxHands=2)
+offset = 20
+imgSize = 300
+labels = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
 
-        self.mpHands = mp.solutions.hands
-        self.hands = self.mpHands.Hands(
-            static_image_mode=self.mode,
-            max_num_hands=self.maxHands,
-            min_detection_confidence=self.detectionCon,
-            min_tracking_confidence=self.trackCon,
-        )
-        self.mpDraw = mp.solutions.drawing_utils
+classifier1 = Classifier("model_asl/keras_model.h5",  # ASL Model
+                         "model_asl/labels.txt")
+classifier2 = Classifier("TechableISL_upgrade/keras_model.h5",  # ISL Model
+                         "TechableISL_upgrade/labels.txt")
 
-    def findHands(self, img, draw=True):
-        imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.results = self.hands.process(imgRGB)
-        if self.results.multi_hand_landmarks:
-            for handLms in self.results.multi_hand_landmarks:
-                if draw:
-                    self.mpDraw.draw_landmarks(img, handLms, self.mpHands.HAND_CONNECTIONS)
-        return img
+# Streamlit UI
+st.title("Multilingual Sign Language Recognizer")
 
-    def findPosition(self, img, handNo=0, draw=True):
-        lmList = []
-        if self.results.multi_hand_landmarks:
-            myHand = self.results.multi_hand_landmarks[handNo]
-            for id, lm in enumerate(myHand.landmark):
-                h, w, c = img.shape
-                cx, cy = int(lm.x * w), int(lm.y * h)
-                lmList.append([cx, cy])
-                if draw:
-                    cv2.circle(img, (cx, cy), 5, (255, 0, 0), cv2.FILLED)
-        return lmList
+# Sidebar with a small logo
+logo = Image.open("logo.ico")  # Load the logo
+st.sidebar.image(logo, width=80)  # Set small size with width=80
 
-# Load the trained TensorFlow model
-model = load_model('model_asl/keras_model.h5')
+# Sidebar for model selection
+selected_model = st.sidebar.radio("Choose Sign Language Model:", ["American Sign Language", "Indian Sign Language"])
+use_code1 = selected_model == "American Sign Language"
+use_code2 = selected_model == "Indian Sign Language"
 
-# Load the labels
-with open('model_asl/labels.txt', 'r') as f:
-    labels = f.read().splitlines()
+st.sidebar.write(f"Currently using: {selected_model}")
 
-# Crop and preprocess the hand region
-def preprocess_hand_region(frame, lmList):
-    x_min = min([lm[0] for lm in lmList])
-    y_min = min([lm[1] for lm in lmList])
-    x_max = max([lm[0] for lm in lmList])
-    y_max = max([lm[1] for lm in lmList])
+# Add options to view charts
+if st.sidebar.button("View ASL Chart"):
+    st.sidebar.image("Charts\ASL_CHART.png", use_container_width=True)  # Updated parameter
+if st.sidebar.button("View ISL Chart"):
+    st.sidebar.image("Charts/ISL_CHART.jpg", use_container_width=True)  # Updated parameter
 
-    # Add some padding around the hand region
-    x_min = max(0, x_min - 20)
-    y_min = max(0, y_min - 20)
-    x_max = min(frame.shape[1], x_max + 20)
-    y_max = min(frame.shape[0], y_max + 20)
+# Video capture and processing
+frame_placeholder = st.empty()
 
-    hand_region = frame[y_min:y_max, x_min:x_max]
-    resized_hand = cv2.resize(hand_region, (224, 224))
-    preprocessed_hand = resized_hand / 255.0  # Normalize
+while cap.isOpened():
+    success, img = cap.read()
+    if not success:
+        st.write("Failed to capture video")
+        break
+    
+    imgOutput = img.copy()
+    hands, img = (detector1.findHands(img) if use_code1 else detector2.findHands(img))
+    try:
+        if hands:
+            if use_code1:
+                hand = hands[0]
+                x, y, w, h = hand['bbox']
+            else:
+                x1, y1, w1, h1 = hands[0]['bbox']
+                if len(hands) == 2:
+                    x2, y2, w2, h2 = hands[1]['bbox']
+                    x, y, w, h = min(x1, x2), min(y1, y2), max(x1 + w1, x2 + w2) - min(x1, x2), max(y1 + h1, y2 + h2) - min(y1, y2)
+                else:
+                    x, y, w, h = x1, y1, w1, h1
+            
+            imgWhite = np.ones((imgSize, imgSize, 3), np.uint8) * 255
+            imgCrop = img[y - offset:y + h + offset, x - offset:x + w + offset]
+            aspectRatio = h / w
 
-    return preprocessed_hand
+            if aspectRatio > 1:
+                k = imgSize / h
+                wCal = math.ceil(k * w)
+                imgResize = cv2.resize(imgCrop, (wCal, imgSize))
+                wGap = math.ceil((imgSize - wCal) / 2)
+                imgWhite[:, wGap:wCal + wGap] = imgResize
+            else:
+                k = imgSize / w
+                hCal = math.ceil(k * h)
+                imgResize = cv2.resize(imgCrop, (imgSize, hCal))
+                hGap = math.ceil((imgSize - hCal) / 2)
+                imgWhite[hGap:hCal + hGap, :] = imgResize
 
-def main():
-    st.title("Multilingual Sign Language Recognizer")
-    st.write("Upload a video or use your webcam to recognize sign language gestures.")
+            classifier = classifier1 if use_code1 else classifier2
+            prediction, index = classifier.getPrediction(imgWhite, draw=False)
 
-    # Select video source
-    video_source = st.radio("Choose video source:", ('Webcam', 'Upload'))
+            cv2.rectangle(imgOutput, (x - offset, y - offset - 50), (x - offset + 90, y - offset - 50 + 50),
+                          (255, 0, 255), cv2.FILLED)
+            cv2.putText(imgOutput, labels[index], (x, y - 26), cv2.FONT_HERSHEY_COMPLEX, 1.7, (255, 255, 255), 2)
+            cv2.rectangle(imgOutput, (x - offset, y - offset), (x + w + offset, y + h + offset), (255, 0, 255), 4)
+    except:
+        pass
 
-    if video_source == 'Webcam':
-        run_webcam()
-    elif video_source == 'Upload':
-        uploaded_video = st.file_uploader("Upload a video file", type=['mp4', 'avi', 'mov'])
-        if uploaded_video is not None:
-            process_uploaded_video(uploaded_video)
-
-def run_webcam():
-    detector = HandDetector(detectionCon=0.7)
-    cap = cv2.VideoCapture(0)
-
-    stframe = st.empty()
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            st.warning("Unable to access webcam. Make sure it's connected.")
-            break
-
-        frame = cv2.flip(frame, 1)
-        frame = detector.findHands(frame)
-        lmList = detector.findPosition(frame, draw=False)
-
-        if len(lmList) != 0:
-            preprocessed_hand = preprocess_hand_region(frame, lmList)
-
-            # Add a batch dimension and predict
-            prediction = model.predict(np.expand_dims(preprocessed_hand, axis=0))
-            class_id = np.argmax(prediction)
-            label = labels[class_id]
-
-            cv2.putText(frame, label, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 2)
-
-        stframe.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
-
-    cap.release()
-
-def process_uploaded_video(video):
-    detector = HandDetector(detectionCon=0.7)
-    temp_video_path = "temp_video.mp4"
-
-    with open(temp_video_path, 'wb') as f:
-        f.write(video.read())
-
-    cap = cv2.VideoCapture(temp_video_path)
-
-    stframe = st.empty()
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame = cv2.flip(frame, 1)
-        frame = detector.findHands(frame)
-        lmList = detector.findPosition(frame, draw=False)
-
-        if len(lmList) != 0:
-            preprocessed_hand = preprocess_hand_region(frame, lmList)
-
-            # Add a batch dimension and predict
-            prediction = model.predict(np.expand_dims(preprocessed_hand, axis=0))
-            class_id = np.argmax(prediction)
-            label = labels[class_id]
-
-            cv2.putText(frame, label, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 2)
-
-        stframe.image(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), channels="RGB")
-
-    cap.release()
-
-if __name__ == "__main__":
-    main()
-
-# Run the application using: streamlit run Multilingual_sign_language_recognizer.py
+    # Convert to RGB and display
+    imgRGB = cv2.cvtColor(imgOutput, cv2.COLOR_BGR2RGB)
+    frame_placeholder.image(imgRGB, channels="RGB")
